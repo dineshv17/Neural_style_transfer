@@ -177,7 +177,7 @@ def get_feature_representations(model, content_path, style_path):
     return style_features, content_features
 
 def main():
-    st.title("Neural Style Transfer (Optimized for Available Hardware)")
+    st.title("Neural Style Transfer")
     st.write("Upload a content image and a style image to apply style transfer.")
 
     content_file = st.file_uploader("Choose a content image", type=["jpg", "jpeg", "png"])
