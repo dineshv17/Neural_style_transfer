@@ -4,21 +4,8 @@ import numpy as np
 from PIL import Image
 import os
 
-# Check for ROCm support
-if tf.test.is_built_with_rocm():
-    print("ROCm is available. Attempting to use GPU.")
-    # Configure TensorFlow to use ROCm
-    physical_devices = tf.config.list_physical_devices('GPU')
-    if len(physical_devices) > 0:
-        tf.config.experimental.set_memory_growth(physical_devices[0], True)
-        print("GPU configuration successful")
-    else:
-        print("No GPUs found. Falling back to CPU.")
-else:
-    print("ROCm is not available. Using CPU.")
-    # Optimize for CPU usage
-    tf.config.threading.set_inter_op_parallelism_threads(4)
-    tf.config.threading.set_intra_op_parallelism_threads(4)
+# Disable eager execution for better performance
+tf.compat.v1.disable_eager_execution()
 
 # Load VGG19 model
 vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet')
@@ -30,9 +17,10 @@ style_layers = ['block1_conv1', 'block2_conv1', 'block3_conv1', 'block4_conv1', 
 num_content_layers = len(content_layers)
 num_style_layers = len(style_layers)
 
-def load_img(path_to_img):
+@st.cache_data
+def load_img(img_file):
     max_dim = 512
-    img = Image.open(path_to_img)
+    img = Image.open(img_file)
     long = max(img.size)
     scale = max_dim/long
     img = img.resize((round(img.size[0]*scale), round(img.size[1]*scale)), Image.LANCZOS)
@@ -40,10 +28,12 @@ def load_img(path_to_img):
     img = np.expand_dims(img, axis=0)
     return img
 
-def load_and_process_img(path_to_img):
-    img = load_img(path_to_img)
+@st.cache_data
+def load_and_process_img(img_file):
+    img = load_img(img_file)
     return tf.keras.applications.vgg19.preprocess_input(img)
 
+@st.cache_data
 def deprocess_img(processed_img):
     x = processed_img.copy()
     if len(x.shape) == 4:
@@ -58,6 +48,7 @@ def deprocess_img(processed_img):
     x = np.clip(x, 0, 255).astype('uint8')
     return x
 
+@st.cache_resource
 def get_model():
     vgg = tf.keras.applications.vgg19.VGG19(include_top=False, weights='imagenet')
     vgg.trainable = False
@@ -107,30 +98,29 @@ def compute_loss(model, loss_weights, init_image, gram_style_features, content_f
     loss = style_score + content_score 
     return loss, style_score, content_score
 
-@tf.function()
 def compute_loss_and_grads(cfg):
     with tf.GradientTape() as tape: 
         all_loss = compute_loss(**cfg)
     total_loss = all_loss[0]
     return tape.gradient(total_loss, cfg['init_image']), all_loss
 
-def run_style_transfer(content_path, 
-                       style_path,
-                       num_iterations=1000,
+@st.cache_data
+def run_style_transfer(content_file, 
+                       style_file,
+                       num_iterations=300,
                        content_weight=1e3, 
                        style_weight=1e-2): 
     model = get_model() 
     for layer in model.layers:
         layer.trainable = False
     
-    style_features, content_features = get_feature_representations(model, content_path, style_path)
+    style_features, content_features = get_feature_representations(model, content_file, style_file)
     gram_style_features = [gram_matrix(style_feature) for style_feature in style_features]
     
-    init_image = load_and_process_img(content_path)
+    init_image = load_and_process_img(content_file)
     init_image = tf.Variable(init_image, dtype=tf.float32)
     
-    # Adjust learning rate
-    opt = tf.optimizers.Adam(learning_rate=0.01, beta_1=0.99, epsilon=1e-1)
+    opt = tf.optimizers.Adam(learning_rate=5, beta_1=0.99, epsilon=1e-1)
 
     best_loss, best_img = float('inf'), None
     
@@ -159,15 +149,14 @@ def run_style_transfer(content_path,
             best_img = deprocess_img(init_image.numpy())
 
         if i % 100 == 0:
-            print(f'Iteration: {i}, Total loss: {loss:.4e}, '
-                  f'Style loss: {style_score:.4e}, '
-                  f'Content loss: {content_score:.4e}')
+            print(f'Iteration: {i}')
     
     return best_img, best_loss
 
-def get_feature_representations(model, content_path, style_path):
-    content_image = load_and_process_img(content_path)
-    style_image = load_and_process_img(style_path)
+@st.cache_data
+def get_feature_representations(model, content_file, style_file):
+    content_image = load_and_process_img(content_file)
+    style_image = load_and_process_img(style_file)
     
     style_outputs = model(style_image)
     content_outputs = model(content_image)
@@ -177,7 +166,7 @@ def get_feature_representations(model, content_path, style_path):
     return style_features, content_features
 
 def main():
-    st.title("Neural Style Transfer")
+    st.title("Fast Neural Style Transfer")
     st.write("Upload a content image and a style image to apply style transfer.")
 
     content_file = st.file_uploader("Choose a content image", type=["jpg", "jpeg", "png"])
@@ -194,18 +183,8 @@ def main():
             st.image(style_image, caption="Style Image", use_column_width=True)
 
         if st.button("Apply Style Transfer"):
-            with st.spinner("Applying style transfer... This may take several minutes."):
-                content_path = "temp_content.jpg"
-                style_path = "temp_style.jpg"
-                content_image.save(content_path)
-                style_image.save(style_path)
-
-                best_img, best_loss = run_style_transfer(content_path, 
-                                                         style_path, 
-                                                         num_iterations=1000,
-                                                         content_weight=1e3, 
-                                                         style_weight=1e-2)
-
+            with st.spinner("Applying style transfer... This may take a few minutes."):
+                best_img, _ = run_style_transfer(content_file, style_file, num_iterations=300)
                 st.image(best_img, caption="Style Transfer Result", use_column_width=True)
 
 if __name__ == "__main__":
